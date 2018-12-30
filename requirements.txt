@@ -1,0 +1,11 @@
+backports.functools-lru-cache==1.5
+beautifulsoup4==4.6.3
+cheroot==6.5.3
+CherryPy==18.1.0
+jaraco.functools==1.20
+more-itertools==5.0.0
+portend==2.3
+pytz==2018.7
+six==1.12.0
+tempora==1.14
+zc.lockfile==1.4
