@@ -1,13 +1,15 @@
 from bs4 import BeautifulSoup
 from enum import IntEnum
-from urllib import request
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 import cherrypy
-import json
 import re
+import requests
 
 MAX_USERNAME_LENGTH = 32
 MAL_PAGE_SIZE = 300
-MAL_BASE_URL = "https://myanimelist.net"
+PROTOCOL = 'https://'
+MAL_BASE_URL = PROTOCOL + "myanimelist.net"
 AL_URL = "/animelist/%s/load.json?status=7&offset=%d"
 RECOMMENDATION_SEGMENT = "/userrecs"
 
@@ -35,18 +37,19 @@ class AnimeList:
     completed_animes_score_desc = []
     rated_animes = {}
 
-    def __init__(self, user, animes):
+    def __init__(self, user, anime_pages):
         self.user = user
 
-        for anime in animes:
-            if self.isExcluded(anime):
-                self.excluded_anime_urls.append(anime[ANIME_URL_KEY])
-            if anime[ANIME_STATUS_KEY] == AnimeStatus.COMPLETED:
-                self.completed_animes_score_desc.append(anime)
-            score = anime[ANIME_SCORE_KEY]
-            if score != MAL_UNRATED_SCORE:
-                key = anime[ANIME_URL_KEY]
-                self.rated_animes[key] = score
+        for animes in anime_pages:
+            for anime in animes:
+                if self.isExcluded(anime):
+                    self.excluded_anime_urls.append(anime[ANIME_URL_KEY])
+                if anime[ANIME_STATUS_KEY] == AnimeStatus.COMPLETED:
+                    self.completed_animes_score_desc.append(anime)
+                score = anime[ANIME_SCORE_KEY]
+                if score != MAL_UNRATED_SCORE:
+                    key = anime[ANIME_URL_KEY]
+                    self.rated_animes[key] = score
         self.completed_animes_score_desc.sort(
             key=lambda x: x[ANIME_SCORE_KEY], reverse=True
         )
@@ -65,23 +68,43 @@ class AnimeList:
 
 class AnimeListFetcher:
 
+    def wrapped_request(self, url):
+        s = requests.Session()
+        retries = Retry(
+            total=5, backoff_factor=1, status_forcelist=[502, 503, 504]
+        )
+        s.mount(PROTOCOL, HTTPAdapter(max_retries=retries))
+        return s.get(url)
+
     def animelist(self, username):
         page = 0
-        offset = page * MAL_PAGE_SIZE
-        list_url = MAL_BASE_URL + AL_URL % (username, offset)
-        with request.urlopen(list_url) as response:
-            animes = json.loads(response.read())
-            return AnimeList(username, animes)
+        anime_pages = []
+        while True:
+            offset = page * MAL_PAGE_SIZE
+            list_url = MAL_BASE_URL + AL_URL % (username, offset)
+            response = self.wrapped_request(list_url)
+            if response.status_code == 200:
+                animes = response.json()
+                anime_pages.append(animes)
+                if len(animes) != MAL_PAGE_SIZE:
+                    break
+                page += 1
+            else:
+                break
+        return AnimeList(username, anime_pages)
 
     def recommendations(self, anime_url):
         recommendation_url = MAL_BASE_URL + anime_url + RECOMMENDATION_SEGMENT
-        with request.urlopen(recommendation_url) as response:
-            soup = BeautifulSoup(response.read(), "html.parser")
+        response = self.wrapped_request(recommendation_url)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
             marker_node = soup.find('div', {'id': 'horiznav_nav'})
             nodes = marker_node.find_next_siblings(
                 'div', {'class': 'borderClass'}
             )
             return list(map(self.extract_node_info, nodes))
+        else:
+            return []
 
     def extract_node_info(self, node):
         parent = node.find('div', {'class': 'picSurround'})
